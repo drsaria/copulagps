@@ -1,0 +1,34 @@
+# R session artifacts
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+
+# Built package output
+*.tar.gz
+*.Rcheck/
+
+# pkgdown site
+docs/
+
+# Generated vignette and documentation output
+inst/doc/
+vignettes/*.html
+vignettes/*.pdf
+vignettes/*_cache/
+vignettes/*_files/
+
+# roxygen2 man page cache
+.Rd2pdf*/
+
+# Compiled src code
+src/*.o
+src/*.so
+src/*.dll
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Box sync lock files
+*.bnk

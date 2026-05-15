@@ -1,0 +1,174 @@
+---
+title: "Handling Limit-of-Detection Censoring"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Handling Limit-of-Detection Censoring}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE, comment = "#>", fig.width = 7, fig.height = 4.5
+)
+set.seed(123)
+```
+
+## Overview
+
+Many environmental and pharmacological studies measure treatments (e.g. chemical
+concentrations) that fall below an instrument's limit of detection (LOD).
+This vignette shows how `copulagps` handles LOD-censored treatments and
+compares three estimation strategies:
+
+1. **Substitution** — replace censored values with LOD / √2 (naive).
+2. **IFAM** (`censoring_method = "standard"`) — iterative copula imputation
+   with Rubin's rules combination across M chains.
+3. **Uncensored-only** (`censoring_method = "uncens"`) — restrict outcome
+   regression to fully-detected observations.
+
+## Simulate censored data
+
+```{r simulate}
+library(copulagps)
+
+n <- 500
+X <- cbind(
+  X1 = rnorm(n), X2 = rnorm(n), X3 = rnorm(n),
+  X4 = rbinom(n, 1, 0.5), X5 = rbinom(n, 1, 0.5)
+)
+
+sim <- simulate_treatments(
+  n             = n,
+  copula_family = "clayton",
+  tau           = 0.5,
+  covariate_mat = X,
+  beta_list     = list(c(0.4, 0, 0, 0.4, 0), c(0.4, 0, 0, -0.2, 0))
+)
+T_true <- sim$y   # true (unobserved) treatments
+
+# LOD thresholds: T1 at ~20th pct, T2 at ~30th pct
+lod <- c(
+  T1 = quantile(T_true[, 1], 0.20),
+  T2 = quantile(T_true[, 2], 0.30)
+)
+
+# Apply censoring: replace with LOD where treatment is below threshold
+T_obs <- T_true
+T_obs[T_true[, 1] <= lod[1], 1] <- lod[1]
+T_obs[T_true[, 2] <= lod[2], 2] <- lod[2]
+
+cat("Censoring rates: T1 =", mean(T_true[, 1] <= lod[1]) * 100, "%,",
+    "T2 =", mean(T_true[, 2] <= lod[2]) * 100, "%\n")
+
+# Generate continuous outcome from TRUE treatments (bias check)
+Y <- T_true[, 1] + T_true[, 2] + 0.5 * X[, 1] + rnorm(n, 0, 1.5)
+```
+
+## Method 1: Substitution (LOD / √2)
+
+The simplest approach is to replace all censored values with LOD / √2.
+This introduces systematic measurement error and biases the ATE estimate
+downward.
+
+```{r substitution}
+gps_sub <- estimate_gps(y = T_obs, x = X, lod = lod)
+
+ate_sub <- estimate_ate(
+  gps_sub, outcome = Y, covariates = X,
+  censoring_method = "substitution",  # default: LOD / sqrt(2)
+  sub_values       = "lod_sqrt2"
+)
+cat("Substitution ATE:", round(ate_sub$ate_estimates[[1]]$ate, 3),
+    "(true = 2.0)\n")
+```
+
+## Method 2: IFAM — full iterative copula imputation
+
+`estimate_gps()` with `lod` specified runs Tobit MLE for the marginals and
+iterative copula imputation for the censored cells.  We run M = 5 chains and
+combine estimates via Rubin's rules.
+
+```{r ifam}
+gps_ifam <- estimate_gps(
+  y   = T_obs,
+  x   = X,
+  lod = lod,
+  copula_family = "auto"
+)
+
+result_ifam <- run_chains(
+  gps_obj = gps_ifam,
+  outcome = Y,
+  M       = 5,
+  covariates = X
+)
+
+combined <- combine_rubin(result_ifam)
+cat("IFAM ATE:", round(combined$pooled_ate, 3), "(true = 2.0)\n")
+cat("95% CI: [", round(combined$ci_lower, 3), ",",
+    round(combined$ci_upper, 3), "]\n")
+```
+
+## Method 3: Uncensored-only outcome regression
+
+When censoring rates are modest, we can estimate the GPS from the full
+sample (which correctly accounts for censoring via Tobit) but fit the
+outcome model only on fully-detected observations.
+
+```{r uncens}
+ate_uncens <- estimate_ate(
+  gps_ifam, outcome = Y, covariates = X,
+  censoring_method = "uncens"
+)
+cat("Uncens ATE:", round(ate_uncens$ate_estimates[[1]]$ate, 3),
+    "(true = 2.0)\n")
+```
+
+## Comparison
+
+```{r compare}
+results <- data.frame(
+  Method = c("Substitution (LOD/sqrt(2))", "IFAM (M=5)", "Uncens-only"),
+  ATE    = c(
+    ate_sub$ate_estimates[[1]]$ate,
+    combined$pooled_ate,
+    ate_uncens$ate_estimates[[1]]$ate
+  ),
+  SE     = c(
+    ate_sub$ate_estimates[[1]]$se,
+    combined$pooled_se,
+    ate_uncens$ate_estimates[[1]]$se
+  )
+)
+results$Bias <- results$ATE - 2.0
+print(round(results, 4))
+```
+
+The IFAM approach recovers the true ATE with the least bias.  Substitution
+consistently underestimates the ATE because it replaces low (informative)
+values with a single constant.  The uncensored-only estimator is unbiased
+but has higher variance due to the reduced effective sample.
+
+## Binary outcome
+
+The same three methods work for binary outcomes by passing a binary `outcome`
+vector and letting `model_type = "auto"` detect logistic regression.
+
+```{r binary}
+Y_bin <- rbinom(n, 1, plogis(-3 + T_true[, 1] + T_true[, 2] + 0.5 * X[, 1]))
+
+ate_bin_ifam <- estimate_ate(
+  gps_ifam, outcome = Y_bin, covariates = X,
+  censoring_method = "standard"
+)
+cat("Binary ATE (risk difference):",
+    round(ate_bin_ifam$ate_estimates[[1]]$ate, 4), "\n")
+
+# Marginal structural OR (no covariates in outcome model)
+ate_bin_or <- estimate_ate(
+  gps_ifam, outcome = Y_bin, estimand = "OR",
+  censoring_method = "standard"
+)
+cat("Marginal OR:", round(ate_bin_or$or_estimates[[1]]$or, 3), "\n")
+```

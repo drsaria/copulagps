@@ -1,0 +1,42 @@
+Package: copulagps
+Type: Package
+Title: Copula-Based Generalized Propensity Scores for Multivariate Continuous Treatments
+Version: 0.1.0
+Authors@R: person("First", "Last", email = "awadalla@gmail.com", role = c("aut", "cre"))
+Description: Estimates generalized propensity scores (GPS) for multivariate
+    continuous treatments using copula models, with support for limit-of-detection
+    (LOD) censoring via Tobit-MLE and iterative copula imputation. Provides
+    covariate balance assessment; GPS-weighted average treatment effect (ATE)
+    and marginal structural odds ratio (OR) estimation with delta-method standard
+    errors; dose-response function (DRF) estimation and visualisation over a
+    treatment grid; convex hull and Mahalanobis overlap trimming; multiple
+    augmentation chains with Rubin's rules variance combination; three
+    censoring-method strategies for the outcome model (IFAM, uncensored-only,
+    substitution); and a user-extensible API for applying custom outcome models
+    to augmented data.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: true
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.1
+Imports:
+    VineCopula,
+    ggplot2,
+    patchwork,
+    MASS,
+    statmod,
+    sandwich,
+    lmtest,
+    gt,
+    AER,
+    future,
+    future.apply,
+    mgcv,
+    rlang
+Suggests:
+    testthat (>= 3.0.0),
+    knitr,
+    rmarkdown,
+    dbarts
+Config/testthat/edition: 3
+VignetteBuilder: knitr

@@ -1,0 +1,140 @@
+---
+title: "Flexible Outcome Models: GAM and BART"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Flexible Outcome Models: GAM and BART}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE, comment = "#>", fig.width = 7, fig.height = 4.5
+)
+set.seed(7)
+```
+
+## Overview
+
+When the true outcome surface is nonlinear — for example, when the two
+treatments interact — a linear outcome model is misspecified and will produce
+biased ATE estimates even with perfect GPS weighting.  This vignette
+demonstrates the use of GAM and BART outcome models to capture nonlinearity.
+
+## Simulate data with an interaction surface
+
+```{r simulate}
+library(copulagps)
+
+n <- 500
+X <- cbind(
+  X1 = rnorm(n), X2 = rnorm(n), X3 = rnorm(n),
+  X4 = rbinom(n, 1, 0.5), X5 = rbinom(n, 1, 0.5)
+)
+
+sim <- simulate_treatments(
+  n             = n,
+  copula_family = "clayton",
+  tau           = 0.5,
+  covariate_mat = X,
+  beta_list     = list(c(0.4, 0, 0, 0.4, 0), c(0.4, 0, 0, -0.2, 0))
+)
+T_mat <- sim$y
+
+# Interaction outcome: true ATE (75th vs 25th pct) depends on both treatments
+t_h <- apply(T_mat, 2, quantile, probs = 0.75)
+t_l <- apply(T_mat, 2, quantile, probs = 0.25)
+
+# True ATE under interaction model: sum(t_h - t_l) + 0.5*(t_h1*t_h2 - t_l1*t_l2)
+true_ate_int <- sum(t_h - t_l) + 0.5 * (t_h[1] * t_h[2] - t_l[1] * t_l[2])
+cat("True ATE (interaction):", round(true_ate_int, 3), "\n")
+
+Y <- T_mat[, 1] + T_mat[, 2] + 0.5 * T_mat[, 1] * T_mat[, 2] +
+     0.5 * X[, 1] + rnorm(n, 0, 1.5)
+```
+
+## Estimate GPS
+
+```{r gps}
+gps <- estimate_gps(y = T_mat, x = X, copula_family = "auto")
+```
+
+## Model 1: Linear (misspecified)
+
+```{r lm}
+ate_lm <- estimate_ate(gps, outcome = Y, covariates = X, model_type = "lm")
+cat("Linear ATE:", round(ate_lm$ate_estimates[[1]]$ate, 3),
+    " (true:", round(true_ate_int, 3), ")\n")
+```
+
+The linear model misses the interaction term and will be biased.
+
+## Model 2: GAM with smooth terms
+
+```{r gam, message = FALSE}
+ate_gam <- estimate_ate(
+  gps,
+  outcome    = Y,
+  covariates = X,
+  model_type = "gam"
+)
+cat("GAM ATE:", round(ate_gam$ate_estimates[[1]]$ate, 3),
+    " (true:", round(true_ate_int, 3), ")\n")
+```
+
+## Model 3: BART
+
+BART uses GPS weights via an AIPW correction rather than direct weighting.
+It captures complex nonlinear and interaction effects automatically.
+
+```{r bart, eval = requireNamespace("dbarts", quietly = TRUE)}
+ate_bart <- estimate_ate(
+  gps,
+  outcome    = Y,
+  covariates = X,
+  model_type = "bart"
+)
+cat("BART ATE:", round(ate_bart$ate_estimates[[1]]$ate, 3),
+    " (true:", round(true_ate_int, 3), ")\n")
+```
+
+## Comparing DRF surfaces
+
+The dose-response surface reveals the interaction: the effect of T1 is
+larger at high values of T2, and vice versa.
+
+```{r drf_compare, fig.alt = "Marginal DRF: linear vs GAM"}
+drf_lm  <- drf(ate_lm,  vary = "marginal")
+drf_gam <- drf(ate_gam, vary = "marginal")
+
+# Stack for a side-by-side comparison
+library(ggplot2)
+drf_lm_df  <- do.call(rbind, drf_lm$slices);  drf_lm_df$Model  <- "Linear"
+drf_gam_df <- do.call(rbind, drf_gam$slices); drf_gam_df$Model <- "GAM"
+drf_comb   <- rbind(drf_lm_df, drf_gam_df)
+
+ggplot(drf_comb, aes(x = t, y = mu_hat, colour = Model)) +
+  geom_line(linewidth = 0.9) +
+  geom_ribbon(aes(ymin = lower, ymax = upper, fill = Model),
+              alpha = 0.15, colour = NA) +
+  facet_wrap(~ treatment, scales = "free_x") +
+  scale_colour_manual(values = c(Linear = "#d73027", GAM = "#1a9850")) +
+  scale_fill_manual(values   = c(Linear = "#d73027", GAM = "#1a9850")) +
+  labs(x = "Treatment value", y = expression(hat(mu)(t)),
+       title = "Dose-Response: Linear vs GAM") +
+  theme_bw()
+```
+
+The GAM curves are non-straight, capturing the marginal curvature introduced
+by the interaction term.
+
+## Guidance on model selection
+
+- **Linear model** (`model_type = "lm"`): suitable when the outcome–treatment
+  relationship is approximately linear after conditioning on covariates.
+- **GAM** (`model_type = "gam"`): recommended when you suspect smooth
+  nonlinearity.  The number of basis functions is chosen automatically.
+- **BART** (`model_type = "bart"`): the most flexible option; use when
+  interactions and complex nonlinearities are expected but not known in advance.
+  BART has higher computational cost and returns posterior-based SEs rather
+  than sandwich SEs.

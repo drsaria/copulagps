@@ -1,0 +1,148 @@
+---
+title: "Custom Outcome Models: Log-Linear and Count Outcomes"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Custom Outcome Models: Log-Linear and Count Outcomes}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE, comment = "#>", fig.width = 7, fig.height = 4.5
+)
+set.seed(99)
+```
+
+## Overview
+
+The built-in `model_type` options (`"lm"`, `"glm"`, `"gam"`, `"bart"`) cover
+the most common outcome types.  For other outcome distributions — Poisson count
+data, negative binomial, Gamma responses, log-linear models — `copulagps`
+provides `apply_augmented()`, which hands the GPS-augmented dataset to any
+user-supplied function.
+
+## Simulate count data
+
+We generate a Poisson-distributed outcome where the mean depends on both
+treatments and a covariate.
+
+```{r simulate}
+library(copulagps)
+
+n <- 500
+X <- cbind(
+  X1 = rnorm(n), X2 = rnorm(n), X3 = rnorm(n),
+  X4 = rbinom(n, 1, 0.5), X5 = rbinom(n, 1, 0.5)
+)
+
+sim <- simulate_treatments(
+  n             = n,
+  copula_family = "clayton",
+  tau           = 0.5,
+  covariate_mat = X,
+  beta_list     = list(c(0.4, 0, 0, 0.4, 0), c(0.4, 0, 0, -0.2, 0))
+)
+T_mat <- sim$y
+
+# Poisson log-linear outcome: log(E[Y]) = 0.3*T1 + 0.3*T2 + 0.2*X1
+lambda <- exp(0.3 * T_mat[, 1] + 0.3 * T_mat[, 2] + 0.2 * X[, 1])
+Y_count <- rpois(n, lambda)
+cat("Mean count:", round(mean(Y_count), 2),
+    "  Variance:", round(var(Y_count), 2), "\n")
+```
+
+## Estimate GPS
+
+```{r gps}
+gps <- estimate_gps(y = T_mat, x = X, copula_family = "auto")
+```
+
+## Approach 1: Use built-in `glm` with Poisson family
+
+`estimate_ate()` supports any GLM family via the `family` argument.
+
+```{r glm_poisson}
+ate_pois <- estimate_ate(
+  gps,
+  outcome    = Y_count,
+  covariates = X,
+  model_type = "glm",
+  family     = poisson(link = "log")
+)
+cat("Poisson GLM ATE (count scale):",
+    round(ate_pois$ate_estimates[[1]]$ate, 3), "\n")
+```
+
+For count outcomes the ATE is on the absolute count scale (expected count
+difference at the high vs low treatment level).
+
+## Approach 2: Log-linear model via `apply_augmented()`
+
+`apply_augmented()` gives you full control over the outcome model.  Your
+function receives a data frame with columns `T1`, `T2`, `w` (GPS weights),
+and `outcome`.
+
+```{r apply_augmented}
+my_loglinear <- function(data) {
+  d_active <- data[!is.na(data$w), ]
+  glm(outcome ~ T1 + T2 + X1,
+      data    = d_active,
+      weights = d_active$w,
+      family  = gaussian(link = "log"))
+}
+
+# Attach covariates to the augmented data before passing
+augmented <- get_augmented_data(gps, outcome = Y_count)
+augmented$X1 <- X[, 1]
+
+loglin_fit <- my_loglinear(augmented)
+summary(loglin_fit)$coefficients[1:4, ]
+```
+
+To compute an ATE from this custom fit, use G-computation manually:
+
+```{r gcomp_custom}
+t_h <- apply(T_mat, 2, quantile, probs = 0.75)
+t_l <- apply(T_mat, 2, quantile, probs = 0.25)
+
+# Prediction data frames at t_h and t_l (all X values)
+make_pdata <- function(treat) {
+  df <- as.data.frame(matrix(rep(treat, n), n, byrow = TRUE))
+  colnames(df) <- c("T1", "T2"); df$X1 <- X[, 1]; df
+}
+
+mu_h <- mean(predict(loglin_fit, newdata = make_pdata(t_h), type = "response"))
+mu_l <- mean(predict(loglin_fit, newdata = make_pdata(t_l), type = "response"))
+cat("Log-linear ATE:", round(mu_h - mu_l, 3), "\n")
+```
+
+## Approach 3: Negative binomial for overdispersed counts
+
+If the outcome is overdispersed (variance >> mean), a negative binomial model
+is appropriate.
+
+```{r nb, message = FALSE}
+library(MASS)  # for glm.nb
+
+my_nb <- function(data) {
+  d_active <- data[!is.na(data$w), ]
+  MASS::glm.nb(outcome ~ T1 + T2 + X1, data = d_active, weights = d_active$w)
+}
+
+nb_fit <- my_nb(augmented)
+cat("NB dispersion theta:", round(nb_fit$theta, 3), "\n")
+```
+
+## Writing a compatible `custom_fn`
+
+Any function passed to `apply_augmented()` must:
+
+1. Accept a `data.frame` as its first argument.
+2. Have access to columns `T1`, `T2`, ..., `Td`, `w`, and `outcome`.
+3. Handle `w = NA` rows (hull-trimmed): typically filter these out first with
+   `data <- data[!is.na(data$w), ]`.
+4. Return whatever is useful downstream (a model fit, a scalar ATE, a list).
+
+Additional covariates can be attached to the augmented data frame before
+calling `apply_augmented()`, as shown above.

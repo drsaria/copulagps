@@ -1,0 +1,136 @@
+---
+title: "Getting Started: Uncensored Continuous Treatments"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting Started: Uncensored Continuous Treatments}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE, comment = "#>", fig.width = 7, fig.height = 4.5
+)
+set.seed(42)
+```
+
+## Overview
+
+This vignette walks through the core `copulagps` workflow for estimating
+causal effects of two correlated continuous treatments in an observational
+study.  We simulate data from a known data-generating process so that we
+can verify the method recovers the true ATE.
+
+## Simulate data
+
+We generate n = 500 observations with two treatments drawn from a bivariate
+Clayton copula (Kendall τ = 0.5) and Normal marginals that depend on five
+covariates.
+
+```{r simulate}
+library(copulagps)
+
+n  <- 500
+d  <- 2
+
+# Covariates: 3 continuous + 2 binary
+X <- cbind(
+  X1 = rnorm(n), X2 = rnorm(n), X3 = rnorm(n),
+  X4 = rbinom(n, 1, 0.5), X5 = rbinom(n, 1, 0.5)
+)
+
+sim <- simulate_treatments(
+  n             = n,
+  copula_family = "clayton",
+  tau           = 0.5,
+  covariate_mat = X,
+  beta_list     = list(c(0.4, 0, 0, 0.4, 0), c(0.4, 0, 0, -0.2, 0))
+)
+T_mat <- sim$y   # n x 2 treatment matrix
+
+# True ATE for the additive outcome: Delta = t_h1 - t_l1 + t_h2 - t_l2
+# We'll compute it exactly after we choose the contrast.
+
+# Helper to generate outcomes (reused across vignettes)
+sim_outcome <- function(T_mat, X_mat, binary = FALSE, interaction = FALSE) {
+  lin <- T_mat[, 1] + T_mat[, 2] + 0.5 * X_mat[, 1]
+  if (interaction) lin <- lin + 0.5 * T_mat[, 1] * T_mat[, 2]
+  if (binary) {
+    rbinom(nrow(T_mat), 1, plogis(-3 + lin))
+  } else {
+    lin + rnorm(nrow(T_mat), 0, 1.5)
+  }
+}
+
+Y_cont   <- sim_outcome(T_mat, X, binary = FALSE)
+Y_binary <- sim_outcome(T_mat, X, binary = TRUE)
+```
+
+## Estimate the GPS
+
+```{r gps}
+gps <- estimate_gps(
+  y             = T_mat,
+  x             = X,
+  copula_family = "auto",   # AIC selects among Clayton/Gumbel/Frank/Gaussian
+  trim_method   = "hull"    # convex-hull trimming for d = 2
+)
+print(gps)
+```
+
+## Assess covariate balance
+
+```{r balance, fig.alt = "MSMD bar chart before and after GPS weighting"}
+bal <- balance_assessment(gps, covariates = X)
+print(bal)
+plot(bal)
+```
+
+Values of MSMD below 0.1 after weighting indicate that GPS reweighting has
+removed the association between the treatments and covariates.
+
+## Estimate the ATE — continuous outcome
+
+```{r ate_cont}
+# Treatment contrast: 75th vs 25th percentile (default)
+ate_cont <- estimate_ate(gps, outcome = Y_cont, covariates = X)
+print(ate_cont)
+get_ate_table(ate_cont)
+```
+
+The true ATE is `d = 2` (sum of unit treatment effects for an additive model).
+
+## Estimate the marginal structural OR — binary outcome
+
+The marginal structural OR is a GPS-weighted logistic regression *without*
+covariates in the outcome model.  It directly estimates the population-average
+odds ratio comparing the two treatment levels.
+
+```{r msor}
+ate_or <- estimate_ate(
+  gps,
+  outcome   = Y_binary,
+  estimand  = "OR"
+  # treatment_levels uses the same 75th vs 25th percentile default
+)
+print(ate_or)
+get_ate_table(ate_or)
+```
+
+## Dose-response function
+
+We can visualise how the expected outcome changes continuously across the
+full treatment range using `drf()`.
+
+```{r drf, fig.alt = "Marginal dose-response curves for T1 and T2"}
+drf_obj <- drf(ate_cont, vary = "marginal", n_grid = 60)
+print(drf_obj)
+plot(drf_obj)
+```
+
+For d = 2 we can also inspect the joint surface:
+
+```{r drf_joint, fig.alt = "Joint dose-response surface heatmap"}
+drf_joint <- drf(ate_cont, vary = "joint", n_grid = 40)
+plot(drf_joint)
+```
