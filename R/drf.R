@@ -60,7 +60,8 @@ drf <- function(ate_obj, grid = NULL, vary = c("marginal", "joint"),
   weights    <- gps$weights
   active     <- !is.na(weights)
   w_active   <- weights[active]
-  covariates <- if (!is.null(ate_obj$gps$data$x)) ate_obj$gps$data$x else NULL
+  # Covariates are stored in gps_ate$covariates (set by estimate_ate())
+  covariates <- ate_obj$covariates
   trt_names  <- paste0("T", seq_len(d))
   model      <- ate_obj$outcome_model
   z_crit     <- stats::qnorm(1 - alpha / 2)

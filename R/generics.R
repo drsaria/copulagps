@@ -15,11 +15,11 @@ print.gps_weights <- function(x, ...) {
   cat("========================\n")
   cat("n:", sp$n, "| d:", sp$d, "| margins:", paste(sp$margins, collapse = ", "), "\n")
   cat("Copula:", sp$copula_type, "| stabilization:", sp$stabilization, "\n")
-  if (sp$hull_trim)
-    cat("Hull-trimmed:", d$n_hull_trimmed, "obs\n")
+  if (identical(sp$trim_method, "hull"))
+    cat("Hull-trimmed:", d$n_overlap_trimmed, "obs\n")
   cat("Auto-adjust:", sp$auto_adjust)
-  if (d$residual_copula_used) cat("  [residual copula active]")
-  cat("\nParameters:", if (d$params_estimated) "estimated" else "user-provided", "\n\n")
+  if (isTRUE(d$residual_copula_used)) cat("  [residual copula active]")
+  cat("\nParameters:", if (isTRUE(d$params_estimated)) "estimated" else "user-provided", "\n\n")
 
   cat("Weight Summary:\n"); print(summary(x$weights[!is.na(x$weights)])); cat("\n")
 

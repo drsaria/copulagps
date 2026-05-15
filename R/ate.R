@@ -211,6 +211,7 @@ estimate_ate <- function(
            family = stats::binomial(), robust_se = robust_se,
            vcov_matrix = vcov_or, estimand = "OR",
            censoring_method = censoring_method,
+           covariates = covariates,
            gps = gps, outcome = outcome),
       class = "gps_ate"
     ))
@@ -261,6 +262,7 @@ estimate_ate <- function(
            treatment_levels = treatment_levels, model_type = "gam",
            family = NULL, robust_se = FALSE, vcov_matrix = V,
            estimand = "ATE", censoring_method = censoring_method,
+           covariates = covariates,
            gps = gps, outcome = outcome),
       class = "gps_ate"
     ))
@@ -317,6 +319,7 @@ estimate_ate <- function(
            treatment_levels = treatment_levels, model_type = "bart",
            family = NULL, robust_se = FALSE, vcov_matrix = NULL,
            estimand = "ATE", censoring_method = censoring_method,
+           covariates = covariates,
            gps = gps, outcome = outcome,
            note = "GPS weights enter via AIPW augmentation; BART outcome model is unweighted"),
       class = "gps_ate"
@@ -329,6 +332,12 @@ estimate_ate <- function(
   } else {
     stats::glm(outcome ~ ., data = model_df, weights = w_active, family = family)
   }
+  # When sum(active) < n, model.frame.lm re-evaluates the stored `weights`
+  # symbol against the full-n prediction data frames used in the ATE loop
+  # below, which triggers "variable lengths differ".  Stripping the weights
+  # from the stored call prevents that re-evaluation; the fitted coefficients
+  # and vcov are unaffected.
+  outcome_model$call$weights <- NULL
 
   coef_est <- coef(outcome_model)
   keep     <- !is.na(coef_est)
@@ -397,6 +406,7 @@ estimate_ate <- function(
          family = if (model_type == "glm") family else NULL,
          robust_se = robust_se, vcov_matrix = vcov_matrix,
          estimand = "ATE", censoring_method = censoring_method,
+         covariates = covariates,
          gps = gps, outcome = outcome),
     class = "gps_ate"
   )
